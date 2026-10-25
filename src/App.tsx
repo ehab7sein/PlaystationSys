@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ClerkProvider, SignedIn, SignedOut } from '@clerk/react'
+import { ClerkProvider, SignedIn, SignedOut } from '@clerk/clerk-react'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { RouteGuard } from '@/components/auth/RouteGuard'

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { useUser } from '@clerk/react'
+import { useUser } from '@clerk/clerk-react'
 import { supabase } from '@/lib/supabase'
 import type { Profile, UserRole } from '@/types/database'
 

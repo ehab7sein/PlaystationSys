@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { useClerk } from '@clerk/react'
+import { useClerk } from '@clerk/clerk-react'
 import { LayoutGrid, ShoppingBag, BarChart2, Settings, LogOut, Gamepad2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
