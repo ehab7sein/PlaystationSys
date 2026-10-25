@@ -9,15 +9,17 @@ import { Input } from '@/components/ui/Input'
 import { formatEGP } from '@/lib/utils'
 import type { Device, AppSettings, RoundingMode } from '@/types/database'
 import { SalariesTab } from '@/components/settings/SalariesTab'
+import { UsersTab } from '@/components/settings/UsersTab'
 
-type Tab = 'devices' | 'general' | 'salaries'
+type Tab = 'devices' | 'general' | 'salaries' | 'users'
 
 export function SettingsPage() {
-  const { canManageUsers, canManageSalaries, isAdmin } = useAuth()
+  const { canManageSalaries, canManageUsers, isOwner, isAdmin } = useAuth()
   const [activeTab, setActiveTab] = useState<Tab>('devices')
 
   const TABS: { value: Tab; label: string; show: boolean }[] = [
     { value: 'devices', label: 'الأجهزة', show: true },
+    { value: 'users', label: 'المستخدمين والصلاحيات', show: isOwner || isAdmin },
     { value: 'general', label: 'الإعدادات العامة', show: true },
     { value: 'salaries', label: 'الرواتب', show: canManageSalaries },
   ]
@@ -27,12 +29,12 @@ export function SettingsPage() {
       <h1 className="text-2xl font-bold text-on-surface">الإعدادات</h1>
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-card-border pb-0">
+      <div className="flex gap-2 border-b border-card-border pb-0 overflow-x-auto">
         {TABS.filter(t => t.show).map(tab => (
           <button
             key={tab.value}
             onClick={() => setActiveTab(tab.value)}
-            className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors -mb-px ${
+            className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors -mb-px whitespace-nowrap ${
               activeTab === tab.value
                 ? 'border-primary text-primary'
                 : 'border-transparent text-on-surface-variant hover:text-on-surface'
@@ -44,6 +46,7 @@ export function SettingsPage() {
       </div>
 
       {activeTab === 'devices' && <DevicesTab />}
+      {activeTab === 'users' && (isOwner || isAdmin) && <UsersTab />}
       {activeTab === 'general' && <GeneralTab />}
       {activeTab === 'salaries' && canManageSalaries && <SalariesTab />}
     </div>

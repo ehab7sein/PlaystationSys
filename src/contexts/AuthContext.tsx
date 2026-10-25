@@ -14,7 +14,7 @@ interface AuthContextValue {
   canViewAllRevenue: boolean
   canManageUsers: boolean
   canManageSalaries: boolean
-  createAdminProfile: () => Promise<void>
+  createProfileWithRole: (role?: UserRole) => Promise<void>
   refreshProfile: () => Promise<void>
 }
 
@@ -29,7 +29,7 @@ const AuthContext = createContext<AuthContextValue>({
   canViewAllRevenue: false,
   canManageUsers: false,
   canManageSalaries: false,
-  createAdminProfile: async () => {},
+  createProfileWithRole: async () => {},
   refreshProfile: async () => {},
 })
 
@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchProfile = useCallback(async (currentUserId: string, currentUserName: string) => {
     try {
-      // Use maybeSingle to avoid 406 error when row does not exist
+      // 1. Check if user already has a profile
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
@@ -57,29 +57,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
 
-      // If no profile found, check if this is the first user in the whole system
+      // 2. If no profile exists, automatically create one:
+      // First user in system -> admin
+      // Any subsequent new user -> worker (كاشير)
       const { count } = await supabase
         .from('profiles')
         .select('*', { count: 'exact', head: true })
 
-      // If database has 0 profiles, auto-provision this first user as admin!
-      if (count === 0 || count === null) {
-        const { data: created, error: insertErr } = await supabase
-          .from('profiles')
-          .insert({
-            clerk_user_id: currentUserId,
-            name: currentUserName || 'مدير النظام',
-            role: 'admin',
-            is_active: true,
-          })
-          .select()
-          .maybeSingle()
+      const assignedRole: UserRole = (count === 0 || count === null) ? 'admin' : 'worker'
 
-        if (!insertErr && created) {
-          setProfile(created)
-          setIsLoading(false)
-          return
-        }
+      const { data: created, error: insertErr } = await supabase
+        .from('profiles')
+        .insert({
+          clerk_user_id: currentUserId,
+          name: currentUserName || (assignedRole === 'admin' ? 'المدير' : 'كاشير'),
+          role: assignedRole,
+          is_active: true,
+        })
+        .select()
+        .maybeSingle()
+
+      if (!insertErr && created) {
+        setProfile(created)
+        setIsLoading(false)
+        return
+      }
+
+      if (insertErr) {
+        console.error('Auto profile creation error:', insertErr)
       }
 
       setProfile(null)
@@ -99,28 +104,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
-    const displayName = user.fullName || user.firstName || user.username || 'مدير النظام'
+    const displayName = user.fullName || user.firstName || user.username || 'كاشير'
     fetchProfile(user.id, displayName)
   }, [user, isLoaded, fetchProfile])
 
-  const createAdminProfile = async () => {
+  const createProfileWithRole = async (targetRole: UserRole = 'worker') => {
     if (!user) return
     setIsLoading(true)
-    const displayName = user.fullName || user.firstName || user.username || 'مدير النظام'
+    const displayName = user.fullName || user.firstName || user.username || (targetRole === 'admin' ? 'المدير' : 'كاشير')
+    
+    // Check if exists first
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('clerk_user_id', user.id)
+      .maybeSingle()
+
+    if (existing) {
+      setProfile(existing)
+      setIsLoading(false)
+      return
+    }
+
     const { data, error } = await supabase
       .from('profiles')
       .insert({
         clerk_user_id: user.id,
         name: displayName,
-        role: 'admin',
+        role: targetRole,
         is_active: true,
       })
       .select()
       .maybeSingle()
 
     if (error) {
-      console.error('Failed to create admin profile:', error)
-      alert(`خطأ في إنشاء الحساب: ${error.message}\nتأكد من تشغيل ملف RLS policies في Supabase SQL editor.`)
+      console.error('Failed to create profile:', error)
+      alert(`خطأ في إنشاء الحساب: ${error.message}`)
     } else if (data) {
       setProfile(data)
     }
@@ -129,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProfile = async () => {
     if (!user) return
-    const displayName = user.fullName || user.firstName || user.username || 'مدير النظام'
+    const displayName = user.fullName || user.firstName || user.username || 'مستخدم'
     await fetchProfile(user.id, displayName)
   }
 
@@ -146,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     canViewAllRevenue: role === 'owner' || role === 'admin',
     canManageUsers: role === 'admin',
     canManageSalaries: role === 'owner' || role === 'admin',
-    createAdminProfile,
+    createProfileWithRole,
     refreshProfile,
   }
 
