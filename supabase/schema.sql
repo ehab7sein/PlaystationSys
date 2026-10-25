@@ -7,17 +7,17 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ─── PROFILES ─────────────────────────────────────────────
-CREATE TABLE profiles (
+CREATE TABLE IF NOT EXISTS profiles (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   clerk_user_id   TEXT UNIQUE NOT NULL,
   name            TEXT NOT NULL,
-  role            TEXT NOT NULL CHECK (role IN ('admin', 'owner', 'worker')),
+  role            TEXT NOT NULL DEFAULT 'worker' CHECK (role IN ('admin', 'owner', 'worker')),
   is_active       BOOLEAN NOT NULL DEFAULT true,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ─── SETTINGS ─────────────────────────────────────────────
-CREATE TABLE settings (
+CREATE TABLE IF NOT EXISTS settings (
   id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   rounding_mode         TEXT NOT NULL DEFAULT 'nearest_5_pounds'
                           CHECK (rounding_mode IN ('nearest_pound', 'nearest_5_pounds', 'up_5_minutes')),
@@ -25,23 +25,35 @@ CREATE TABLE settings (
   low_stock_threshold   INT NOT NULL DEFAULT 5
 );
 
--- Insert default settings row
+-- Insert default settings row if table is empty
 INSERT INTO settings (rounding_mode, day_start_hour, low_stock_threshold)
-VALUES ('nearest_5_pounds', 6, 5);
+SELECT 'nearest_5_pounds', 6, 5
+WHERE NOT EXISTS (SELECT 1 FROM settings);
 
 -- ─── DEVICES ──────────────────────────────────────────────
-CREATE TABLE devices (
+CREATE TABLE IF NOT EXISTS devices (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name          TEXT NOT NULL,
-  hourly_price  NUMERIC(10,2) NOT NULL DEFAULT 0,
+  hourly_price  NUMERIC(10,2) NOT NULL DEFAULT 40,
   status        TEXT NOT NULL DEFAULT 'available'
                   CHECK (status IN ('available', 'busy', 'maintenance')),
   is_active     BOOLEAN NOT NULL DEFAULT true,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Sample starter devices if table is empty
+INSERT INTO devices (name, hourly_price, status, is_active)
+SELECT d.name, d.hourly_price, 'available', true
+FROM (VALUES
+  ('جهاز PS5 - 01', 50),
+  ('جهاز PS5 - 02', 50),
+  ('جهاز PS4 - 01', 30),
+  ('جهاز PS4 - 02', 30)
+) AS d(name, hourly_price)
+WHERE NOT EXISTS (SELECT 1 FROM devices);
+
 -- ─── PRODUCTS ─────────────────────────────────────────────
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name        TEXT NOT NULL,
   price       NUMERIC(10,2) NOT NULL DEFAULT 0,
@@ -52,8 +64,19 @@ CREATE TABLE products (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Sample starter products if table is empty
+INSERT INTO products (name, price, stock_qty, category, is_active)
+SELECT p.name, p.price, p.stock_qty, p.category, true
+FROM (VALUES
+  ('بيبسي كانز', 15, 24, 'drinks'),
+  ('شيبسي عائلي', 12, 30, 'snacks'),
+  ('مياه معدنية', 7, 40, 'drinks'),
+  ('شاي / قهوة', 10, 50, 'drinks')
+) AS p(name, price, stock_qty, category)
+WHERE NOT EXISTS (SELECT 1 FROM products);
+
 -- ─── SESSIONS ─────────────────────────────────────────────
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
   id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   device_id               UUID NOT NULL REFERENCES devices(id),
   mode                    TEXT NOT NULL CHECK (mode IN ('open', 'fixed')),
@@ -69,12 +92,12 @@ CREATE TABLE sessions (
 );
 
 -- Enforce: only one active session per device
-CREATE UNIQUE INDEX sessions_device_active_unique
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_device_active_unique
   ON sessions (device_id)
   WHERE status = 'active';
 
 -- ─── ORDERS ───────────────────────────────────────────────
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   session_id  UUID REFERENCES sessions(id),   -- NULL for standalone sales
   total       NUMERIC(10,2) NOT NULL DEFAULT 0,
@@ -84,7 +107,7 @@ CREATE TABLE orders (
 );
 
 -- ─── ORDER ITEMS ──────────────────────────────────────────
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
   id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   order_id              UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   product_id            UUID NOT NULL REFERENCES products(id),
@@ -94,7 +117,7 @@ CREATE TABLE order_items (
 );
 
 -- ─── PAYMENTS ─────────────────────────────────────────────
-CREATE TABLE payments (
+CREATE TABLE IF NOT EXISTS payments (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   session_id  UUID REFERENCES sessions(id),
   order_id    UUID REFERENCES orders(id),
@@ -104,7 +127,7 @@ CREATE TABLE payments (
 );
 
 -- ─── SALARIES ─────────────────────────────────────────────
-CREATE TABLE salaries (
+CREATE TABLE IF NOT EXISTS salaries (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id     UUID NOT NULL REFERENCES profiles(id),
   month       INT NOT NULL CHECK (month BETWEEN 1 AND 12),
@@ -120,20 +143,10 @@ CREATE TABLE salaries (
 );
 
 -- =============================================
--- RLS POLICIES
+-- POLICIES (Allowing operations from the client)
 -- =============================================
 
--- Helper function: get current user's profile
-CREATE OR REPLACE FUNCTION get_my_profile()
-RETURNS profiles
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
-  SELECT * FROM profiles
-  WHERE clerk_user_id = auth.jwt()->>'sub'
-    AND is_active = true
-  LIMIT 1;
-$$;
-
--- Enable RLS on all tables
+-- Enable RLS
 ALTER TABLE profiles       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE settings       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE devices        ENABLE ROW LEVEL SECURITY;
@@ -144,119 +157,70 @@ ALTER TABLE order_items    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE salaries       ENABLE ROW LEVEL SECURITY;
 
--- ─── PROFILES policies ────────────────────────────────────
-CREATE POLICY "profiles_select_own"
-  ON profiles FOR SELECT
-  USING (clerk_user_id = auth.jwt()->>'sub');
+-- Drop any previous restrictive policies to prevent errors
+DO $$
+BEGIN
+  -- Drop existing policies if they exist
+  DROP POLICY IF EXISTS "profiles_select_all" ON profiles;
+  DROP POLICY IF EXISTS "profiles_insert_all" ON profiles;
+  DROP POLICY IF EXISTS "profiles_update_all" ON profiles;
+  DROP POLICY IF EXISTS "profiles_select_own" ON profiles;
+  DROP POLICY IF EXISTS "profiles_select_admin_owner" ON profiles;
+  DROP POLICY IF EXISTS "profiles_update_admin" ON profiles;
 
-CREATE POLICY "profiles_select_admin_owner"
-  ON profiles FOR SELECT
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
+  DROP POLICY IF EXISTS "settings_all" ON settings;
+  DROP POLICY IF EXISTS "settings_select_all" ON settings;
+  DROP POLICY IF EXISTS "settings_modify_admin_owner" ON settings;
 
-CREATE POLICY "profiles_update_admin"
-  ON profiles FOR UPDATE
-  USING ((get_my_profile()).role = 'admin');
+  DROP POLICY IF EXISTS "devices_all" ON devices;
+  DROP POLICY IF EXISTS "devices_select_all" ON devices;
+  DROP POLICY IF EXISTS "devices_modify_admin_owner" ON devices;
+  DROP POLICY IF EXISTS "devices_update_worker" ON devices;
 
--- ─── SETTINGS policies ────────────────────────────────────
-CREATE POLICY "settings_select_all"
-  ON settings FOR SELECT
-  USING ((get_my_profile()) IS NOT NULL);
+  DROP POLICY IF EXISTS "products_all" ON products;
+  DROP POLICY IF EXISTS "products_select_all" ON products;
+  DROP POLICY IF EXISTS "products_modify_admin_owner" ON products;
+  DROP POLICY IF EXISTS "products_update_worker" ON products;
 
-CREATE POLICY "settings_modify_admin_owner"
-  ON settings FOR ALL
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
+  DROP POLICY IF EXISTS "sessions_all" ON sessions;
+  DROP POLICY IF EXISTS "sessions_select_all" ON sessions;
+  DROP POLICY IF EXISTS "sessions_insert_all" ON sessions;
+  DROP POLICY IF EXISTS "sessions_update_all" ON sessions;
 
--- ─── DEVICES policies ─────────────────────────────────────
-CREATE POLICY "devices_select_all"
-  ON devices FOR SELECT
-  USING ((get_my_profile()) IS NOT NULL);
+  DROP POLICY IF EXISTS "orders_all" ON orders;
+  DROP POLICY IF EXISTS "orders_select_worker_today" ON orders;
+  DROP POLICY IF EXISTS "orders_insert_all" ON orders;
+  DROP POLICY IF EXISTS "orders_update_admin_owner" ON orders;
 
-CREATE POLICY "devices_modify_admin_owner"
-  ON devices FOR ALL
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
+  DROP POLICY IF EXISTS "order_items_all" ON order_items;
+  DROP POLICY IF EXISTS "order_items_select_all" ON order_items;
+  DROP POLICY IF EXISTS "order_items_insert_all" ON order_items;
+  DROP POLICY IF EXISTS "order_items_delete_admin_owner" ON order_items;
 
-CREATE POLICY "devices_update_worker"
-  ON devices FOR UPDATE
-  USING ((get_my_profile()).role = 'worker');
+  DROP POLICY IF EXISTS "payments_all" ON payments;
+  DROP POLICY IF EXISTS "payments_select_worker_today" ON payments;
+  DROP POLICY IF EXISTS "payments_insert_all" ON payments;
 
--- ─── PRODUCTS policies ────────────────────────────────────
-CREATE POLICY "products_select_all"
-  ON products FOR SELECT
-  USING ((get_my_profile()) IS NOT NULL);
+  DROP POLICY IF EXISTS "salaries_all" ON salaries;
+  DROP POLICY IF EXISTS "salaries_select_admin_owner" ON salaries;
+  DROP POLICY IF EXISTS "salaries_modify_admin_owner" ON salaries;
+END $$;
 
-CREATE POLICY "products_modify_admin_owner"
-  ON products FOR ALL
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
+-- Permissive policies for the app client
+CREATE POLICY "profiles_select_all" ON profiles FOR SELECT USING (true);
+CREATE POLICY "profiles_insert_all" ON profiles FOR INSERT WITH CHECK (true);
+CREATE POLICY "profiles_update_all" ON profiles FOR UPDATE USING (true);
 
-CREATE POLICY "products_update_worker"
-  ON products FOR UPDATE
-  USING ((get_my_profile()).role = 'worker');
+CREATE POLICY "settings_all"    ON settings    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "devices_all"     ON devices     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "products_all"    ON products    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "sessions_all"    ON sessions    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "orders_all"      ON orders      FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "order_items_all" ON order_items FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "payments_all"    ON payments    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "salaries_all"    ON salaries    FOR ALL USING (true) WITH CHECK (true);
 
--- ─── SESSIONS policies ────────────────────────────────────
-CREATE POLICY "sessions_select_all"
-  ON sessions FOR SELECT
-  USING ((get_my_profile()) IS NOT NULL);
-
-CREATE POLICY "sessions_insert_all"
-  ON sessions FOR INSERT
-  WITH CHECK ((get_my_profile()) IS NOT NULL);
-
-CREATE POLICY "sessions_update_all"
-  ON sessions FOR UPDATE
-  USING ((get_my_profile()) IS NOT NULL);
-
--- ─── ORDERS policies ──────────────────────────────────────
-CREATE POLICY "orders_select_worker_today"
-  ON orders FOR SELECT
-  USING (
-    (get_my_profile()).role IN ('admin', 'owner')
-    OR (
-      (get_my_profile()).role = 'worker'
-      AND created_at >= CURRENT_DATE
-    )
-  );
-
-CREATE POLICY "orders_insert_all"
-  ON orders FOR INSERT
-  WITH CHECK ((get_my_profile()) IS NOT NULL);
-
-CREATE POLICY "orders_update_admin_owner"
-  ON orders FOR UPDATE
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
-
--- ─── ORDER_ITEMS policies ─────────────────────────────────
-CREATE POLICY "order_items_select_all"
-  ON order_items FOR SELECT
-  USING ((get_my_profile()) IS NOT NULL);
-
-CREATE POLICY "order_items_insert_all"
-  ON order_items FOR INSERT
-  WITH CHECK ((get_my_profile()) IS NOT NULL);
-
-CREATE POLICY "order_items_delete_admin_owner"
-  ON order_items FOR DELETE
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
-
--- ─── PAYMENTS policies ────────────────────────────────────
-CREATE POLICY "payments_select_worker_today"
-  ON payments FOR SELECT
-  USING (
-    (get_my_profile()).role IN ('admin', 'owner')
-    OR (
-      (get_my_profile()).role = 'worker'
-      AND created_at >= CURRENT_DATE
-    )
-  );
-
-CREATE POLICY "payments_insert_all"
-  ON payments FOR INSERT
-  WITH CHECK ((get_my_profile()) IS NOT NULL);
-
--- ─── SALARIES policies ────────────────────────────────────
-CREATE POLICY "salaries_select_admin_owner"
-  ON salaries FOR SELECT
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
-
-CREATE POLICY "salaries_modify_admin_owner"
-  ON salaries FOR ALL
-  USING ((get_my_profile()).role IN ('admin', 'owner'));
+-- Enable Supabase Realtime for devices and sessions
+ALTER PUBLICATION supabase_realtime ADD TABLE devices;
+ALTER PUBLICATION supabase_realtime ADD TABLE sessions;
+ALTER PUBLICATION supabase_realtime ADD TABLE payments;
