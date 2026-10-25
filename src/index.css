@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@theme {
+  /* ─── Colors from DESIGN.md ─── */
+  --color-surface: #0f131c;
+  --color-surface-dim: #0f131c;
+  --color-surface-bright: #353943;
+  --color-surface-container-lowest: #0a0e17;
+  --color-surface-container-low: #181c25;
+  --color-surface-container: #1c2029;
+  --color-surface-container-high: #262a34;
+  --color-surface-container-highest: #31353f;
+  --color-on-surface: #dfe2ef;
+  --color-on-surface-variant: #bdc8d1;
+  --color-outline: #87929a;
+  --color-outline-variant: #3e484f;
+
+  --color-primary: #38bdf8;
+  --color-primary-dark: #00354a;
+  --color-primary-dim: #8ed5ff;
+
+  --color-secondary: #22c55e;
+  --color-secondary-dark: #003915;
+
+  --color-tertiary: #f59e0b;
+  --color-tertiary-dark: #472a00;
+
+  --color-error: #ef4444;
+  --color-error-dark: #93000a;
+
+  --color-background: #0f131c;
+  --color-on-background: #dfe2ef;
+  --color-card: #1b2230;
+  --color-card-border: #283347;
+
+  /* Status colors */
+  --color-available: #22c55e;
+  --color-busy: #ef4444;
+  --color-maintenance: #f59e0b;
+
+  /* ─── Typography ─── */
+  --font-sans: 'Cairo', 'Plus Jakarta Sans', system-ui, sans-serif;
+
+  /* ─── Border Radius ─── */
+  --radius-sm: 0.25rem;
+  --radius-DEFAULT: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --radius-full: 9999px;
+
+  /* ─── Spacing ─── */
+  --spacing-gutter: 1rem;
+  --spacing-gutter-sm: 0.75rem;
+  --spacing-gutter-lg: 1.5rem;
+}
+
+/* ─── Arabic RTL Global ─── */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  direction: rtl;
+  font-family: 'Cairo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  background-color: #0f131c;
+  color: #dfe2ef;
+}
+
+/* Tabular numbers for timers & prices */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #1c2029;
+}
+::-webkit-scrollbar-thumb {
+  background: #3e484f;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #87929a;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+/* Scale effect on button press */
+button:active {
+  transform: scale(0.98);
+}
