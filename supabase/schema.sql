@@ -2,6 +2,38 @@
 -- PlayStation Shop Management System
 -- Database Schema + RLS Policies
 -- =============================================
+--
+-- Migration SQL for existing databases (run this in Supabase SQL Editor):
+--
+-- ALTER TABLE profiles ADD COLUMN IF NOT EXISTS username TEXT UNIQUE;
+-- ALTER TABLE profiles ADD COLUMN IF NOT EXISTS password TEXT;
+-- ALTER TABLE profiles ALTER COLUMN clerk_user_id DROP NOT NULL;
+--
+-- Allow deleting profiles:
+-- CREATE POLICY "profiles_delete_all" ON profiles FOR DELETE USING (true);
+--
+-- Fix foreign key constraints when deleting profiles (keeps transaction history safe):
+-- ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_created_by_fkey;
+-- ALTER TABLE sessions ADD CONSTRAINT sessions_created_by_fkey FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE SET NULL;
+--
+-- ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_created_by_fkey;
+-- ALTER TABLE orders ADD CONSTRAINT orders_created_by_fkey FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE SET NULL;
+--
+-- ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_created_by_fkey;
+-- ALTER TABLE payments ADD CONSTRAINT payments_created_by_fkey FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE SET NULL;
+--
+-- ALTER TABLE salaries DROP CONSTRAINT IF EXISTS salaries_created_by_fkey;
+-- ALTER TABLE salaries ADD CONSTRAINT salaries_created_by_fkey FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE SET NULL;
+--
+-- ALTER TABLE salaries DROP CONSTRAINT IF EXISTS salaries_user_id_fkey;
+-- ALTER TABLE salaries ADD CONSTRAINT salaries_user_id_fkey FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE;
+--
+-- Default credentials for existing profiles:
+-- UPDATE profiles SET username = 'admin', password = '123' WHERE role = 'admin' AND (username IS NULL OR username = '');
+-- UPDATE profiles SET username = 'ehab', password = '123' WHERE name ILIKE '%Ehab%' AND (username IS NULL OR username = '');
+-- UPDATE profiles SET username = 'adel', password = '123' WHERE name ILIKE '%Adel%' AND (username IS NULL OR username = '');
+--
+-- =============================================
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -9,10 +41,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ─── PROFILES ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS profiles (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  clerk_user_id   TEXT UNIQUE NOT NULL,
+  username        TEXT UNIQUE NOT NULL,
+  password        TEXT NOT NULL,
   name            TEXT NOT NULL,
   role            TEXT NOT NULL DEFAULT 'worker' CHECK (role IN ('admin', 'owner', 'worker')),
   is_active       BOOLEAN NOT NULL DEFAULT true,
+  clerk_user_id   TEXT UNIQUE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -87,7 +121,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   time_amount             NUMERIC(10,2),
   status                  TEXT NOT NULL DEFAULT 'active'
                             CHECK (status IN ('active', 'closed')),
-  created_by              UUID REFERENCES profiles(id),
+  created_by              UUID REFERENCES profiles(id) ON DELETE SET NULL,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -98,12 +132,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS sessions_device_active_unique
 
 -- ─── ORDERS ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS orders (
-  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  session_id  UUID REFERENCES sessions(id),   -- NULL for standalone sales
-  total       NUMERIC(10,2) NOT NULL DEFAULT 0,
-  paid_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
-  created_by  UUID REFERENCES profiles(id),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id      UUID REFERENCES sessions(id),   -- NULL for standalone sales
+  total           NUMERIC(10,2) NOT NULL DEFAULT 0,
+  paid_amount     NUMERIC(10,2) NOT NULL DEFAULT 0,
+  discount_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+  notes           TEXT,
+  created_by      UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ─── ORDER ITEMS ──────────────────────────────────────────
@@ -122,14 +158,14 @@ CREATE TABLE IF NOT EXISTS payments (
   session_id  UUID REFERENCES sessions(id),
   order_id    UUID REFERENCES orders(id),
   amount      NUMERIC(10,2) NOT NULL,
-  created_by  UUID REFERENCES profiles(id),
+  created_by  UUID REFERENCES profiles(id) ON DELETE SET NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ─── SALARIES ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS salaries (
   id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id     UUID NOT NULL REFERENCES profiles(id),
+  user_id     UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   month       INT NOT NULL CHECK (month BETWEEN 1 AND 12),
   year        INT NOT NULL,
   base_salary NUMERIC(10,2) NOT NULL DEFAULT 0,
@@ -137,9 +173,25 @@ CREATE TABLE IF NOT EXISTS salaries (
   deductions  NUMERIC(10,2) NOT NULL DEFAULT 0,
   notes       TEXT,
   paid_at     TIMESTAMPTZ,
-  created_by  UUID REFERENCES profiles(id),
+  created_by  UUID REFERENCES profiles(id) ON DELETE SET NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (user_id, month, year)
+);
+
+-- ─── AUDIT LOGS (سجل الرقابة غير القابل للتعديل) ───────────
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  action_type       TEXT NOT NULL,
+  session_id        UUID REFERENCES sessions(id) ON DELETE SET NULL,
+  device_name       TEXT,
+  user_id           UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  user_name         TEXT NOT NULL,
+  expected_amount   NUMERIC(10,2) NOT NULL DEFAULT 0,
+  paid_amount       NUMERIC(10,2) NOT NULL DEFAULT 0,
+  discount_amount   NUMERIC(10,2) NOT NULL DEFAULT 0,
+  remaining_amount  NUMERIC(10,2) NOT NULL DEFAULT 0,
+  notes             TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- =============================================
@@ -156,6 +208,7 @@ ALTER TABLE orders         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_items    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE salaries       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs     ENABLE ROW LEVEL SECURITY;
 
 -- Drop any previous restrictive policies to prevent errors
 DO $$
@@ -164,6 +217,7 @@ BEGIN
   DROP POLICY IF EXISTS "profiles_select_all" ON profiles;
   DROP POLICY IF EXISTS "profiles_insert_all" ON profiles;
   DROP POLICY IF EXISTS "profiles_update_all" ON profiles;
+  DROP POLICY IF EXISTS "profiles_delete_all" ON profiles;
   DROP POLICY IF EXISTS "profiles_select_own" ON profiles;
   DROP POLICY IF EXISTS "profiles_select_admin_owner" ON profiles;
   DROP POLICY IF EXISTS "profiles_update_admin" ON profiles;
@@ -204,12 +258,17 @@ BEGIN
   DROP POLICY IF EXISTS "salaries_all" ON salaries;
   DROP POLICY IF EXISTS "salaries_select_admin_owner" ON salaries;
   DROP POLICY IF EXISTS "salaries_modify_admin_owner" ON salaries;
+
+  DROP POLICY IF EXISTS "audit_logs_all" ON audit_logs;
+  DROP POLICY IF EXISTS "audit_logs_select" ON audit_logs;
+  DROP POLICY IF EXISTS "audit_logs_insert" ON audit_logs;
 END $$;
 
 -- Permissive policies for the app client
 CREATE POLICY "profiles_select_all" ON profiles FOR SELECT USING (true);
 CREATE POLICY "profiles_insert_all" ON profiles FOR INSERT WITH CHECK (true);
 CREATE POLICY "profiles_update_all" ON profiles FOR UPDATE USING (true);
+CREATE POLICY "profiles_delete_all" ON profiles FOR DELETE USING (true);
 
 CREATE POLICY "settings_all"    ON settings    FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "devices_all"     ON devices     FOR ALL USING (true) WITH CHECK (true);
@@ -219,6 +278,10 @@ CREATE POLICY "orders_all"      ON orders      FOR ALL USING (true) WITH CHECK (
 CREATE POLICY "order_items_all" ON order_items FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "payments_all"    ON payments    FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "salaries_all"    ON salaries    FOR ALL USING (true) WITH CHECK (true);
+
+-- سجل الرقابة: قراءة وإضافة فقط — ممنوع التعديل والحذف من التطبيق
+CREATE POLICY "audit_logs_select" ON audit_logs FOR SELECT USING (true);
+CREATE POLICY "audit_logs_insert" ON audit_logs FOR INSERT WITH CHECK (true);
 
 -- Enable Supabase Realtime for devices and sessions
 ALTER PUBLICATION supabase_realtime ADD TABLE devices;

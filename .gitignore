@@ -36,3 +36,7 @@ lerna-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Separate landing page project (kept out of this Vite app)
+/landing page/
+

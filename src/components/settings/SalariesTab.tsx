@@ -7,37 +7,85 @@ import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { formatEGP } from '@/lib/utils'
-import type { Salary, Profile } from '@/types/database'
+import { translateDbError } from '@/lib/errors'
+import type { Salary, UserRole } from '@/types/database'
+
+interface StaffOption {
+  id: string
+  name: string
+  role: UserRole
+}
 
 export function SalariesTab() {
-  const { profile } = useAuth()
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [salaries, setSalaries] = useState<Salary[]>([])
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const [profiles, setProfiles] = useState<StaffOption[]>([])
   const [showModal, setShowModal] = useState(false)
   const [editSalary, setEditSalary] = useState<Salary | null>(null)
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
 
   const fetchData = useCallback(async () => {
-    const [salariesRes, profilesRes] = await Promise.all([
+    if (!tenantId) {
+      setIsLoading(false)
+      return
+    }
+    const [salariesRes, membersRes] = await Promise.all([
       supabase
         .from('salaries')
         .select('*, profile:profiles(*)')
+        .eq('tenant_id', tenantId)
         .eq('month', selectedMonth)
         .eq('year', selectedYear)
         .order('created_at', { ascending: false }),
-      supabase.from('profiles').select('*').eq('is_active', true).order('name'),
+      supabase
+        .from('memberships')
+        .select('user_id, role, profile:profiles!inner(id, name, is_active)')
+        .eq('tenant_id', tenantId)
+        .eq('is_active', true),
     ])
+
     if (salariesRes.data) setSalaries(salariesRes.data as Salary[])
-    if (profilesRes.data) setProfiles(profilesRes.data)
+    if (salariesRes.error) {
+      setError(translateDbError(salariesRes.error, 'تعذر تحميل الرواتب'))
+    }
+
+    if (membersRes.data) {
+      const rows = membersRes.data as unknown as Array<{
+        user_id: string
+        role: UserRole
+        profile: { id: string; name: string; is_active: boolean } | null
+      }>
+      setProfiles(
+        rows
+          .filter(row => row.profile?.is_active)
+          .map(row => ({
+            id: row.user_id,
+            name: row.profile?.name ?? 'موظف',
+            role: row.role,
+          }))
+      )
+    }
+
     setIsLoading(false)
-  }, [selectedMonth, selectedYear])
+  }, [selectedMonth, selectedYear, tenantId])
 
   useEffect(() => { fetchData() }, [fetchData])
 
   const handleMarkPaid = async (salary: Salary) => {
-    await supabase.from('salaries').update({ paid_at: new Date().toISOString() }).eq('id', salary.id)
+    if (!tenantId) return
+    const { error: updateError } = await supabase
+      .from('salaries')
+      .update({ paid_at: new Date().toISOString() })
+      .eq('id', salary.id)
+      .eq('tenant_id', tenantId)
+    if (updateError) {
+      setError(translateDbError(updateError, 'تعذر تأكيد صرف الراتب'))
+      return
+    }
     fetchData()
   }
 
@@ -73,6 +121,7 @@ export function SalariesTab() {
       </div>
 
       {/* Summary */}
+      {error && <p className="text-sm text-busy">{error}</p>}
       <Card className="flex items-center justify-between">
         <span className="text-on-surface-variant">إجمالي الرواتب لـ {MONTHS[selectedMonth - 1]}</span>
         <span className="text-xl font-bold tabular-nums text-busy">{formatEGP(totalSalaries)}</span>
@@ -95,7 +144,11 @@ export function SalariesTab() {
                       {salary.profile?.name ?? 'موظف'}
                     </p>
                     <p className="text-xs text-on-surface-variant">
-                      {salary.profile?.role === 'worker' ? 'كاشير' : 'مالك'}
+                      {salary.profile?.role === 'worker'
+                        ? 'كاشير'
+                        : salary.profile?.role === 'admin'
+                          ? 'مدير'
+                          : 'مالك'}
                     </p>
                   </div>
                   <div className="text-left">
@@ -148,7 +201,6 @@ export function SalariesTab() {
         profiles={profiles}
         month={selectedMonth}
         year={selectedYear}
-        userId={profile?.id ?? ''}
         onClose={() => setShowModal(false)}
         onSuccess={() => { fetchData(); setShowModal(false) }}
       />
@@ -160,15 +212,16 @@ export function SalariesTab() {
 interface SalaryModalProps {
   isOpen: boolean
   salary: Salary | null
-  profiles: Profile[]
+  profiles: StaffOption[]
   month: number
   year: number
-  userId: string
   onClose: () => void
   onSuccess: () => void
 }
 
-function SalaryModal({ isOpen, salary, profiles, month, year, userId, onClose, onSuccess }: SalaryModalProps) {
+function SalaryModal({ isOpen, salary, profiles, month, year, onClose, onSuccess }: SalaryModalProps) {
+  const { profile, activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [form, setForm] = useState({
     user_id: '',
     base_salary: '',
@@ -199,7 +252,7 @@ function SalaryModal({ isOpen, salary, profiles, month, year, userId, onClose, o
     if (!form.base_salary) { setError('الراتب الأساسي مطلوب'); return }
 
     setIsLoading(true)
-    const payload = {
+    const basePayload = {
       user_id: form.user_id,
       month,
       year,
@@ -207,18 +260,32 @@ function SalaryModal({ isOpen, salary, profiles, month, year, userId, onClose, o
       bonus: Number(form.bonus) || 0,
       deductions: Number(form.deductions) || 0,
       notes: form.notes || null,
-      created_by: userId,
+      paid_at: salary?.paid_at ?? null,
     }
 
     try {
+      if (!tenantId) throw new Error('لا يوجد محل نشط')
       if (salary) {
-        await supabase.from('salaries').update(payload).eq('id', salary.id)
+        // created_by is immutable after insert (enforced by a DB trigger).
+        const { error: updateError } = await supabase
+          .from('salaries')
+          .update(basePayload)
+          .eq('id', salary.id)
+          .eq('tenant_id', tenantId)
+        if (updateError) throw updateError
       } else {
-        await supabase.from('salaries').insert(payload)
+        const { error: insertError } = await supabase
+          .from('salaries')
+          .insert({
+            ...basePayload,
+            tenant_id: tenantId,
+            created_by: profile?.id ?? null,
+          })
+        if (insertError) throw insertError
       }
       onSuccess()
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ')
+      setError(translateDbError(err, 'حدث خطأ أثناء حفظ الراتب'))
     } finally {
       setIsLoading(false)
     }
@@ -237,7 +304,7 @@ function SalaryModal({ isOpen, salary, profiles, month, year, userId, onClose, o
           >
             <option value="">اختر موظفاً</option>
             {profiles.map(p => (
-              <option key={p.id} value={p.id}>{p.name} ({p.role === 'worker' ? 'كاشير' : 'مالك'})</option>
+              <option key={p.id} value={p.id}>{p.name} ({p.role === 'worker' ? 'كاشير' : p.role === 'owner' ? 'مالك' : 'مدير'})</option>
             ))}
           </select>
         </div>

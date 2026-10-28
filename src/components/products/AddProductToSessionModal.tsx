@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/contexts/AuthContext'
+import { translateDbError } from '@/lib/errors'
 import { formatEGP } from '@/lib/utils'
+import { getActiveProducts, invalidateProductsCache } from '@/lib/data-service'
 import type { Product } from '@/types/database'
 
 interface AddProductToSessionModalProps {
   isOpen: boolean
   sessionId: string
-  userId: string
   onClose: () => void
   onSuccess: () => void
 }
@@ -16,10 +18,12 @@ interface AddProductToSessionModalProps {
 export function AddProductToSessionModal({
   isOpen,
   sessionId,
-  userId,
   onClose,
   onSuccess,
 }: AddProductToSessionModalProps) {
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
+
   const [products, setProducts] = useState<Product[]>([])
   const [selected, setSelected] = useState<Product | null>(null)
   const [qty, setQty] = useState(1)
@@ -27,18 +31,19 @@ export function AddProductToSessionModal({
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!isOpen) return
-    supabase
-      .from('products')
-      .select('*')
-      .eq('is_active', true)
-      .order('name')
-      .then(({ data }) => { if (data) setProducts(data) })
-  }, [isOpen])
+    if (!isOpen || !tenantId) return
+    getActiveProducts(tenantId).then(setProducts).catch(console.error)
+  }, [isOpen, tenantId])
 
   const handleAdd = async () => {
-    if (!selected) { setError('اختر منتجاً أولاً'); return }
-    if (qty < 1) { setError('الكمية يجب أن تكون 1 على الأقل'); return }
+    if (!selected) {
+      setError('اختر منتجاً أولاً')
+      return
+    }
+    if (qty < 1) {
+      setError('الكمية يجب أن تكون 1 على الأقل')
+      return
+    }
     if (selected.stock_qty < qty) {
       setError(`الكمية المتاحة ${selected.stock_qty} فقط`)
       return
@@ -47,49 +52,23 @@ export function AddProductToSessionModal({
     setIsLoading(true)
     setError('')
     try {
-      // Get or create order for this session
-      let { data: existingOrder } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('session_id', sessionId)
-        .single()
-
-      let orderId: string
-      if (!existingOrder) {
-        const { data: newOrder, error: orderError } = await supabase
-          .from('orders')
-          .insert({ session_id: sessionId, total: 0, paid_amount: 0, created_by: userId })
-          .select()
-          .single()
-        if (orderError) throw orderError
-        orderId = newOrder.id
-      } else {
-        orderId = existingOrder.id
-      }
-
-      // Add order item
-      const { error: itemError } = await supabase.from('order_items').insert({
-        order_id: orderId,
-        product_id: selected.id,
-        product_name_snapshot: selected.name,
-        unit_price_snapshot: selected.price,
-        qty,
+      // The RPC creates/reuses the session order, snapshots the product price,
+      // deducts stock, and validates the tenant — atomically.
+      const { error: rpcError } = await supabase.rpc('add_product_to_session', {
+        p_session_id: sessionId,
+        p_product_id: selected.id,
+        p_qty: qty,
       })
-      if (itemError) throw itemError
 
-      // Deduct stock
-      const { error: stockError } = await supabase
-        .from('products')
-        .update({ stock_qty: selected.stock_qty - qty })
-        .eq('id', selected.id)
-      if (stockError) throw stockError
+      if (rpcError) throw rpcError
 
+      invalidateProductsCache(tenantId)
       setSelected(null)
       setQty(1)
       onSuccess()
       onClose()
-    } catch (err: any) {
-      setError(err.message || 'حدث خطأ')
+    } catch (err) {
+      setError(translateDbError(err, 'تعذر إضافة المنتج'))
     } finally {
       setIsLoading(false)
     }
@@ -113,13 +92,16 @@ export function AddProductToSessionModal({
               <button
                 key={product.id}
                 disabled={outOfStock}
-                onClick={() => { setSelected(product); setQty(1) }}
+                onClick={() => {
+                  setSelected(product)
+                  setQty(1)
+                }}
                 className={`p-3 rounded-lg border text-right transition-colors ${
                   selected?.id === product.id
                     ? 'border-primary bg-primary/10 text-primary'
                     : outOfStock
-                    ? 'border-card-border opacity-40 cursor-not-allowed text-on-surface-variant'
-                    : 'border-card-border hover:border-primary/50 text-on-surface'
+                      ? 'border-card-border opacity-40 cursor-not-allowed text-on-surface-variant'
+                      : 'border-card-border hover:border-primary/50 text-on-surface'
                 }`}
               >
                 <p className="font-semibold text-sm">{product.name}</p>
@@ -127,11 +109,18 @@ export function AddProductToSessionModal({
                 {outOfStock ? (
                   <p className="text-xs text-busy mt-0.5">خلص</p>
                 ) : (
-                  <p className="text-xs text-on-surface-variant mt-0.5">متاح: {product.stock_qty}</p>
+                  <p className="text-xs text-on-surface-variant mt-0.5">
+                    متاح: {product.stock_qty}
+                  </p>
                 )}
               </button>
             )
           })}
+          {products.length === 0 && (
+            <p className="col-span-2 text-sm text-on-surface-variant text-center py-6">
+              لا توجد منتجات متاحة
+            </p>
+          )}
         </div>
 
         {/* Quantity */}
@@ -160,7 +149,10 @@ export function AddProductToSessionModal({
 
         {selected && (
           <p className="text-sm text-on-surface-variant text-center">
-            الإجمالي: <span className="font-bold text-on-surface tabular-nums">{formatEGP(selected.price * qty)}</span>
+            الإجمالي:{' '}
+            <span className="font-bold text-on-surface tabular-nums">
+              {formatEGP(selected.price * qty)}
+            </span>
           </p>
         )}
 

@@ -38,7 +38,7 @@ export function StatCard({ title, value, icon, className, valueClassName }: Stat
         <span className="text-sm text-on-surface-variant">{title}</span>
         {icon && <span className="text-on-surface-variant">{icon}</span>}
       </div>
-      <span className={cn('text-2xl font-bold tabular-nums text-on-surface', valueClassName)}>
+      <span className={cn('font-display text-2xl font-bold tabular-nums text-on-surface', valueClassName)}>
         {value}
       </span>
     </Card>

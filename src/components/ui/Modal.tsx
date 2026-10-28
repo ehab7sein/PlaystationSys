@@ -9,7 +9,8 @@ interface ModalProps {
   onClose: () => void
   title: string
   children: React.ReactNode
-  size?: 'sm' | 'md' | 'lg'
+  footer?: React.ReactNode
+  size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
 }
 
@@ -17,9 +18,10 @@ const SIZES = {
   sm: 'max-w-sm',
   md: 'max-w-md',
   lg: 'max-w-lg',
+  xl: 'max-w-3xl',
 }
 
-export function Modal({ isOpen, onClose, title, children, size = 'md', className }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, footer, size = 'md', className }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null)
 
   // Close on Escape key
@@ -42,32 +44,39 @@ export function Modal({ isOpen, onClose, title, children, size = 'md', className
   return createPortal(
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.55)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
+      style={{ background: 'rgba(0,0,0,0.68)', backdropFilter: 'blur(4px)' }}
       onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
     >
       <div
         className={cn(
-          'w-full bg-[#1E2638] rounded-xl shadow-2xl',
-          'border border-card-border',
-          'animate-[fadeIn_0.15s_ease-out]',
+          'w-full bg-[#1E2638] rounded-xl overflow-hidden',
+          'border border-card-border flex flex-col max-h-[92vh]',
+          'shadow-[0_24px_64px_rgba(0,0,0,0.55)]',
+          'animate-[modalIn_0.18s_ease-out]',
           SIZES[size],
           className
         )}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-card-border">
+        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-card-border shrink-0">
           <h2 className="text-lg font-bold text-on-surface">{title}</h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-DEFAULT text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+            className="w-9 h-9 flex items-center justify-center rounded-DEFAULT text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
             aria-label="إغلاق"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
         {/* Content */}
-        <div className="px-6 py-4">{children}</div>
+        <div className="px-6 py-5 overflow-y-auto flex-1">{children}</div>
+        {/* Footer */}
+        {footer && (
+          <div className="px-6 py-4 border-t border-card-border bg-surface-container-low/60 shrink-0">
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body

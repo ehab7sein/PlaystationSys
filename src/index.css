@@ -39,7 +39,8 @@
   --color-maintenance: #f59e0b;
 
   /* ─── Typography ─── */
-  --font-sans: 'Cairo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans Arabic', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-display: 'Alexandria', 'IBM Plex Sans Arabic', system-ui, sans-serif;
 
   /* ─── Border Radius ─── */
   --radius-sm: 0.25rem;
@@ -62,9 +63,30 @@
 
 html {
   direction: rtl;
-  font-family: 'Cairo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: var(--font-sans);
   background-color: #0f131c;
   color: #dfe2ef;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.font-display {
+  font-family: var(--font-display);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
 }
 
 /* Tabular numbers for timers & prices */
@@ -87,13 +109,91 @@ html {
   background: #87929a;
 }
 
+/* ─── PlayStation device icon (Flaticon ps4 #771160) ─────────
+   بيستخدم كـ mask عشان ياخد لون الـ text الحالي (text-primary) */
+.ps-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: url('./assets/ps4.png') center / contain no-repeat;
+  mask: url('./assets/ps4.png') center / contain no-repeat;
+}
+
 /* Focus ring */
 :focus-visible {
   outline: 2px solid #38bdf8;
   outline-offset: 2px;
 }
 
+/* Modal entrance */
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Scale effect on button press */
 button:active {
   transform: scale(0.98);
+}
+
+/* ─── Login page (portal form) ────────────────────────────────────────────── */
+.login-page {
+  font-family: var(--font-sans);
+}
+
+.login-ambient {
+  background-color: #06090e;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    radial-gradient(at 0% 0%, rgba(2, 132, 199, 0.18) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(0, 210, 255, 0.12) 0px, transparent 50%),
+    radial-gradient(at 50% 40%, rgba(14, 165, 233, 0.08) 0px, transparent 65%);
+  background-size:
+    40px 40px,
+    40px 40px,
+    100% 100%,
+    100% 100%,
+    100% 100%;
+}
+
+.login-glass {
+  background: rgba(13, 20, 32, 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.login-input:focus {
+  box-shadow:
+    0 0 0 2px rgba(56, 189, 248, 0.3),
+    0 0 20px rgba(0, 210, 255, 0.15);
+}
+
+.login-glow {
+  box-shadow: 0 0 35px -5px rgba(0, 210, 255, 0.35);
+}
+
+.login-card-shadow {
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.login-btn-glow {
+  box-shadow: 0 0 35px -5px rgba(0, 210, 255, 0.35);
+}
+
+.login-btn-glow:hover {
+  box-shadow: 0 0 30px 4px rgba(0, 210, 255, 0.45);
 }

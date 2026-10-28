@@ -7,6 +7,8 @@ import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { formatEGP } from '@/lib/utils'
+import { translateDbError } from '@/lib/errors'
+import { invalidateProductsCache } from '@/lib/data-service'
 import type { Product, ProductCategory } from '@/types/database'
 
 const CATEGORIES: { value: ProductCategory; label: string }[] = [
@@ -16,22 +18,41 @@ const CATEGORIES: { value: ProductCategory; label: string }[] = [
 ]
 
 export function ProductsPage() {
-  const { canManagePrices } = useAuth()
+  const { canManagePrices, activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [products, setProducts] = useState<Product[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editProduct, setEditProduct] = useState<Product | null>(null)
 
   const fetchProducts = useCallback(async () => {
-    const { data } = await supabase.from('products').select('*').order('name')
-    if (data) setProducts(data)
+    if (!tenantId) {
+      setIsLoading(false)
+      return
+    }
+    const { data } = await supabase
+      .from('products')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .order('name')
+    if (data) setProducts(data as Product[])
     setIsLoading(false)
-  }, [])
+  }, [tenantId])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
   const handleToggleActive = async (product: Product) => {
-    await supabase.from('products').update({ is_active: !product.is_active }).eq('id', product.id)
+    if (!tenantId) return
+    const { error } = await supabase
+      .from('products')
+      .update({ is_active: !product.is_active })
+      .eq('id', product.id)
+      .eq('tenant_id', tenantId)
+    if (error) {
+      console.error('Failed to toggle product:', error)
+    } else {
+      invalidateProductsCache(tenantId)
+    }
     fetchProducts()
   }
 
@@ -108,6 +129,8 @@ interface ProductModalProps {
 }
 
 function ProductModal({ isOpen, product, onClose, onSuccess }: ProductModalProps) {
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [form, setForm] = useState({
     name: '',
     price: '',
@@ -146,14 +169,24 @@ function ProductModal({ isOpen, product, onClose, onSuccess }: ProductModalProps
     }
 
     try {
+      if (!tenantId) throw new Error('لا يوجد محل نشط')
       if (product) {
-        await supabase.from('products').update(payload).eq('id', product.id)
+        const { error: updateError } = await supabase
+          .from('products')
+          .update(payload)
+          .eq('id', product.id)
+          .eq('tenant_id', tenantId)
+        if (updateError) throw updateError
       } else {
-        await supabase.from('products').insert({ ...payload, is_active: true })
+        const { error: insertError } = await supabase
+          .from('products')
+          .insert({ ...payload, tenant_id: tenantId, is_active: true })
+        if (insertError) throw insertError
       }
+      invalidateProductsCache(tenantId)
       onSuccess()
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ')
+      setError(translateDbError(err, 'حدث خطأ أثناء حفظ المنتج'))
     } finally {
       setIsLoading(false)
     }

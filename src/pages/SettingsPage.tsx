@@ -7,6 +7,8 @@ import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { formatEGP } from '@/lib/utils'
+import { translateDbError } from '@/lib/errors'
+import { getTenantSettings, invalidateSettingsCache } from '@/lib/data-service'
 import type { Device, AppSettings, RoundingMode } from '@/types/database'
 import { SalariesTab } from '@/components/settings/SalariesTab'
 import { UsersTab } from '@/components/settings/UsersTab'
@@ -14,7 +16,7 @@ import { UsersTab } from '@/components/settings/UsersTab'
 type Tab = 'devices' | 'general' | 'salaries' | 'users'
 
 export function SettingsPage() {
-  const { canManageSalaries, canManageUsers, isOwner, isAdmin } = useAuth()
+  const { canManageSalaries, isOwner, isAdmin } = useAuth()
   const [activeTab, setActiveTab] = useState<Tab>('devices')
 
   const TABS: { value: Tab; label: string; show: boolean }[] = [
@@ -55,19 +57,32 @@ export function SettingsPage() {
 
 // ─── Devices Tab ─────────────────────────────────────────
 function DevicesTab() {
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [devices, setDevices] = useState<Device[]>([])
   const [showModal, setShowModal] = useState(false)
   const [editDevice, setEditDevice] = useState<Device | null>(null)
 
   const fetchDevices = useCallback(async () => {
-    const { data } = await supabase.from('devices').select('*').order('name')
-    if (data) setDevices(data)
-  }, [])
+    if (!tenantId) return
+    const { data } = await supabase
+      .from('devices')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .order('name')
+    if (data) setDevices(data as Device[])
+  }, [tenantId])
 
   useEffect(() => { fetchDevices() }, [fetchDevices])
 
   const handleToggle = async (device: Device) => {
-    await supabase.from('devices').update({ is_active: !device.is_active }).eq('id', device.id)
+    if (!tenantId) return
+    const { error } = await supabase
+      .from('devices')
+      .update({ is_active: !device.is_active })
+      .eq('id', device.id)
+      .eq('tenant_id', tenantId)
+    if (error) console.error('Failed to toggle device:', error)
     fetchDevices()
   }
 
@@ -85,7 +100,10 @@ function DevicesTab() {
             <div className="flex items-start justify-between">
               <div>
                 <p className="font-bold text-on-surface">{device.name}</p>
-                <p className="text-sm text-on-surface-variant">{formatEGP(device.hourly_price)} / ساعة</p>
+                <p className="text-sm text-on-surface-variant">فردي: {formatEGP(device.hourly_price)} / ساعة</p>
+                {device.hourly_price_multi ? (
+                  <p className="text-sm text-on-surface-variant">مالتي: {formatEGP(device.hourly_price_multi)} / ساعة</p>
+                ) : null}
               </div>
               <div className="flex gap-1">
                 <button onClick={() => { setEditDevice(device); setShowModal(true) }}
@@ -127,15 +145,21 @@ interface DeviceModalProps {
 }
 
 function DeviceModal({ isOpen, device, onClose, onSuccess }: DeviceModalProps) {
-  const [form, setForm] = useState({ name: '', hourly_price: '' })
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
+  const [form, setForm] = useState({ name: '', hourly_price: '', hourly_price_multi: '' })
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (device) {
-      setForm({ name: device.name, hourly_price: String(device.hourly_price) })
+      setForm({
+        name: device.name,
+        hourly_price: String(device.hourly_price),
+        hourly_price_multi: device.hourly_price_multi !== undefined && device.hourly_price_multi !== null ? String(device.hourly_price_multi) : '',
+      })
     } else {
-      setForm({ name: '', hourly_price: '' })
+      setForm({ name: '', hourly_price: '', hourly_price_multi: '' })
     }
     setError('')
   }, [device, isOpen])
@@ -143,19 +167,42 @@ function DeviceModal({ isOpen, device, onClose, onSuccess }: DeviceModalProps) {
   const handleSubmit = async () => {
     if (!form.name.trim()) { setError('اسم الجهاز مطلوب'); return }
     if (!form.hourly_price || isNaN(Number(form.hourly_price))) { setError('سعر الساعة غير صحيح'); return }
+    if (form.hourly_price_multi && isNaN(Number(form.hourly_price_multi))) { setError('سعر الساعة متعدد اللاعبين غير صحيح'); return }
 
     setIsLoading(true)
-    const payload = { name: form.name.trim(), hourly_price: Number(form.hourly_price) }
+    const payload: any = {
+      name: form.name.trim(),
+      hourly_price: Number(form.hourly_price),
+    }
+    if (form.hourly_price_multi) {
+      payload.hourly_price_multi = Number(form.hourly_price_multi)
+    } else {
+      payload.hourly_price_multi = null
+    }
 
     try {
+      if (!tenantId) throw new Error('لا يوجد محل نشط')
       if (device) {
-        await supabase.from('devices').update(payload).eq('id', device.id)
+        const { error: updateError } = await supabase
+          .from('devices')
+          .update(payload)
+          .eq('id', device.id)
+          .eq('tenant_id', tenantId)
+        if (updateError) throw updateError
       } else {
-        await supabase.from('devices').insert({ ...payload, status: 'available', is_active: true })
+        const { error: insertError } = await supabase
+          .from('devices')
+          .insert({
+            ...payload,
+            tenant_id: tenantId,
+            status: 'available',
+            is_active: true,
+          })
+        if (insertError) throw insertError
       }
       onSuccess()
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ')
+      setError(translateDbError(err, 'حدث خطأ أثناء حفظ الجهاز'))
     } finally {
       setIsLoading(false)
     }
@@ -165,7 +212,8 @@ function DeviceModal({ isOpen, device, onClose, onSuccess }: DeviceModalProps) {
     <Modal isOpen={isOpen} onClose={onClose} title={device ? 'تعديل جهاز' : 'إضافة جهاز جديد'}>
       <div className="flex flex-col gap-4">
         <Input label="اسم الجهاز" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="مثال: PS5 - 01" />
-        <Input label="سعر الساعة (جنيه)" type="number" value={form.hourly_price} onChange={e => setForm(f => ({ ...f, hourly_price: e.target.value }))} placeholder="40" min="0" />
+        <Input label="سعر الساعة فردي (جنيه)" type="number" value={form.hourly_price} onChange={e => setForm(f => ({ ...f, hourly_price: e.target.value }))} placeholder="40" min="0" />
+        <Input label="سعر الساعة متعدد اللاعبين / مالتي (جنيه)" type="number" value={form.hourly_price_multi} onChange={e => setForm(f => ({ ...f, hourly_price_multi: e.target.value }))} placeholder="60 (اختياري)" min="0" />
         {error && <p className="text-sm text-busy">{error}</p>}
         <Button fullWidth size="lg" onClick={handleSubmit} isLoading={isLoading}>
           {device ? 'حفظ' : 'إضافة'}
@@ -177,6 +225,8 @@ function DeviceModal({ isOpen, device, onClose, onSuccess }: DeviceModalProps) {
 
 // ─── General Settings Tab ──────────────────────────────────
 function GeneralTab() {
+  const { activeTenant } = useAuth()
+  const tenantId = activeTenant?.id ?? null
   const [settings, setSettings] = useState<Partial<AppSettings>>({
     rounding_mode: 'nearest_5_pounds',
     day_start_hour: 6,
@@ -184,22 +234,38 @@ function GeneralTab() {
   })
   const [isSaving, setIsSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    supabase.from('settings').select('*').single()
-      .then(({ data }) => { if (data) setSettings(data) })
-  }, [])
+    if (!tenantId) return
+    getTenantSettings(tenantId).then(data => {
+      if (data) setSettings(data)
+    })
+  }, [tenantId])
 
   const handleSave = async () => {
+    if (!tenantId) return
     setIsSaving(true)
-    if (settings.id) {
-      await supabase.from('settings').update(settings).eq('id', settings.id)
+    setError('')
+    // settings has one row per tenant (unique tenant_id), so upsert is safe
+    // both for the default legacy tenant and for tenants created later.
+    const payload = {
+      tenant_id: tenantId,
+      rounding_mode: settings.rounding_mode ?? 'nearest_5_pounds',
+      day_start_hour: settings.day_start_hour ?? 6,
+      low_stock_threshold: settings.low_stock_threshold ?? 5,
+    }
+    const { error: saveError } = await supabase
+      .from('settings')
+      .upsert(payload, { onConflict: 'tenant_id' })
+    if (saveError) {
+      setError(translateDbError(saveError, 'تعذر حفظ الإعدادات'))
     } else {
-      await supabase.from('settings').insert(settings as AppSettings)
+      invalidateSettingsCache(tenantId)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
     }
     setIsSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   const ROUNDING_OPTIONS: { value: RoundingMode; label: string }[] = [
@@ -243,6 +309,8 @@ function GeneralTab() {
         helperText="تنبيه عندما تقل الكمية عن هذا الرقم"
         min="1"
       />
+
+      {error && <p className="text-sm text-busy">{error}</p>}
 
       <Button fullWidth size="lg" onClick={handleSave} isLoading={isSaving} variant={saved ? 'secondary' : 'primary'}>
         {saved ? '✓ تم الحفظ' : 'حفظ الإعدادات'}
